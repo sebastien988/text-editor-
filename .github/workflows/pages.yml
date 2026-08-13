@@ -1,9 +1,12 @@
 name: Deploy to GitHub Pages
 
 # Publishes a hosted copy so the app can be installed straight from the
-# browser. Pages is enabled automatically on the first run; if your account
-# blocks that, enable it once in Settings → Pages with the source set to
-# "GitHub Actions".
+# browser.
+#
+# Pages has to be turned on by a repo admin first (Settings → Pages, source
+# "GitHub Actions"); the workflow token is not allowed to create the site.
+# Until that happens this job skips with a notice rather than failing, so an
+# optional deploy doesn't hold the default branch red.
 on:
   push:
     branches: ['main']
@@ -28,11 +31,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Is Pages enabled for this repo?
+        id: pages_check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${{ github.repository }}/pages" >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Pages deploy skipped::GitHub Pages is not enabled. Turn it on in Settings → Pages with source 'GitHub Actions', then re-run this workflow."
+          fi
+
       - uses: actions/setup-node@v4
+        if: steps.pages_check.outputs.enabled == 'true'
         with:
           node-version: '20'
 
       - name: Stage the site
+        if: steps.pages_check.outputs.enabled == 'true'
         run: |
           node tools/make-icons.js
           node tools/build.js site
@@ -41,14 +58,14 @@ jobs:
           # Pages serves from a subpath, so no bare-domain assumptions.
           touch site/.nojekyll
 
-      # Turns Pages on for the repo if it isn't already, so this doesn't
-      # require a manual visit to Settings before the first deploy.
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
+        if: steps.pages_check.outputs.enabled == 'true'
+
       - uses: actions/upload-pages-artifact@v3
+        if: steps.pages_check.outputs.enabled == 'true'
         with:
           path: site
 
       - id: deployment
+        if: steps.pages_check.outputs.enabled == 'true'
         uses: actions/deploy-pages@v4
