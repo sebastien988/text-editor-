@@ -1,32 +1,100 @@
 # Featherpad
 
 A fast, dependency-free text editor that runs in the browser. No build step, no
-`node_modules`, no framework — three JS files, one CSS file, one HTML file.
+framework, no runtime dependencies — three JS files, one CSS file, one HTML file.
 
-Styled after macOS (SF Pro / SF Mono, unified title bar, Xcode-flavored syntax
-colors), with fallbacks that look right on Windows and Linux too.
+Minimalist monochrome interface: the chrome recedes to hairlines and ghost
+icon buttons so the text carries all the visual weight. Light and dark themes,
+SF Pro / SF Mono on macOS with fallbacks that look right on Windows and Linux.
 
-## Running it
+## Download
 
-**Windows** — double-click `start.bat`.
-**macOS / Linux** — run `./start.sh`.
+Grab either asset from the [latest release](../../releases/latest). Both run on
+Windows, macOS, and Linux — the editor is a web app, so the only requirement is
+a reasonably current browser.
 
-Both serve the folder on `http://localhost:8080` and open a browser. You can
-also just open `index.html` directly; the only difference is that search runs on
-the main thread instead of in a worker, because `file://` blocks Web Workers.
+**`featherpad.html`** — one file. Download it, double-click it, done. It works
+offline and never touches the network; everything is inlined, including the
+search worker, so search still runs off the main thread.
 
-Nothing is installed, and no file leaves your machine.
+**`featherpad-<version>.zip`** (or `.tar.gz`) — the full app. Unpack it and run
+the launcher for your system:
+
+| OS | Run |
+|---|---|
+| Windows | double-click `start.bat` |
+| macOS / Linux | `./start.sh` |
+
+Both serve the folder on `http://localhost:8080` and open a browser. Serving it
+rather than opening the file directly is what allows the service worker to
+register, which is what makes it installable.
+
+Nothing is installed system-wide, and no file leaves your machine.
+
+## Install it as a desktop app
+
+Open the served app (or the hosted copy, if GitHub Pages is enabled for this
+repo) and use your browser's install control:
+
+- **Chrome / Edge** — the install icon in the address bar, or ⋮ → *Cast, save
+  and share* → *Install page as app*
+- **Safari (macOS 14+)** — *File* → *Add to Dock*
+
+It then runs in its own window with its own icon, launches from the Start menu,
+Dock, or app grid, and keeps working with no network at all — the service
+worker precaches the whole app on first load.
+
+## Building from source
+
+No dependencies are needed to *run* the editor; these are only for building the
+standalone file and running the tests.
+
+```sh
+node tools/build.js      # writes dist/featherpad.html
+node tools/make-icons.js # regenerates the PWA icons from source
+npm install && npm test  # smoke-tests both distribution shapes
+```
+
+Releases are cut by tagging a commit — `git tag v1.0.0 && git push origin
+v1.0.0` — which builds the artifacts, smoke-tests them, and publishes them to
+a GitHub Release. Nothing is uploaded by hand.
 
 ## Features
 
-- Syntax highlighting for JavaScript/TypeScript, Python, and JSON
-- Find & replace with regex, case sensitivity, and match stepping
+- Syntax highlighting for 30 languages, with multi-line comments and strings
+  tracked correctly, plus a generic fallback so unknown file types still read
+  as code
+- Find & replace with regex, case sensitivity, and match stepping, with every
+  match highlighted at once
 - Open/save real files (File System Access API, with a download fallback)
 - Line numbers, active-line highlight, live cursor position and document stats
 - Light/dark themes, adjustable font size
 - Auto-indent-aware Tab/Shift-Tab across a selection, smart Home
 - CRLF/LF detection with round-trip-safe saving, switchable from the status bar
 - Draft autosave to `localStorage`
+
+## Languages
+
+C, C#, C++, CSS/SCSS/Less, Dart, Dockerfile, Generic code, Go, HTML, INI/Config,
+JSON, Java, JavaScript/TypeScript, Kotlin, Lua, Makefile, Markdown, PHP, Perl,
+Python, R, Ruby, Rust, SQL, Scala, Shell/Bash, Swift, TOML, XML, YAML.
+
+The mode is picked from the file extension, or from the filename for files that
+don't have one (`Dockerfile`, `Makefile`, `.bashrc`). Anything unrecognized falls
+back to a generic mode that colors the comment, string, keyword, and number
+shapes nearly every language shares, so an unknown file still reads as code. You
+can always override the choice from the toolbar.
+
+Adding a language is data rather than code — a spec in `js/highlighter.js`:
+
+```js
+elixir: {
+  name: 'Elixir',
+  line: ['#'], spans: [['"""', '"""', STR]],
+  strings: [['"', '"'], ["'", "'"]], numbers: true,
+  keywords: `def defmodule do end if else case cond fn when nil true false`,
+},
+```
 
 ## Performance
 
@@ -35,8 +103,9 @@ The design goal was that **rendering cost should not depend on file size**.
 **Virtualized rendering.** Only the lines actually on screen get DOM nodes —
 about 50-60 of them, whatever the document size. A 300,000-line file renders the
 same ~50 nodes as a 10-line one, and those nodes are pooled and mutated in place
-rather than rebuilt, so scrolling doesn't churn the GC. Measured: 20 scroll
-frames cost **0.2 ms total**, flat from 5k to 100k lines.
+rather than rebuilt, so scrolling doesn't churn the GC. Measured on a
+100,000-line file: **1.2 ms per rendered frame** for plain text, **2.5 ms** for
+highlighted code — flat with file size, and well inside a 16.7 ms frame budget.
 
 **Incremental line indexing.** Mapping character offsets to line numbers needs an
 index of line-start positions. Rebuilding it costs O(document) — ~51 ms on a
@@ -53,10 +122,35 @@ moment after typing stops instead of taxing every keystroke.
 back as a transferred `Int32Array` of offset pairs — no copy, no main-thread
 stall. Searching 2,500 matches in a 10,000-line file stays interactive.
 
-**Per-line tokenizing.** The highlighter is stateless and tokenizes each line
-independently, so highlighting also scales with visible lines rather than file
-size. The tradeoff is that multi-line block comments and template strings aren't
-tracked across line boundaries.
+**Virtualized match highlighting.** Every match is highlighted, but only the ones
+intersecting the visible window are ever built. On a 10,000-line file with 5,000
+live matches the DOM holds ~27 highlight nodes rather than 5,000, and the render
+frame stays at 1.6 ms.
+
+**Per-line tokenizing.** Languages are declared as compact specs — comment
+markers, string delimiters, keywords — compiled once into a single alternation
+regex. Each line is tokenized on its own, so highlighting scales with visible
+lines rather than file size.
+
+**Bounded cross-line state.** Block comments and triple-quoted strings break the
+"each line is independent" assumption: whether line 900 is code or comment can
+depend on line 40. The tokenizer threads a small integer state from each line to
+the next, and the editor caches the state entering each line, extending that
+cache forward as you scroll and truncating it at the first edited line. Costs on
+a 100,000-line C file with block comments throughout:
+
+| Action | Per rendered frame |
+|---|---|
+| Sequential scrolling | 3.5 ms |
+| Jump to line 100,000 (cold) | 9.0 ms, once |
+| Sustained scrolling after that jump | 2.9 ms |
+
+Resolving a cold jump exactly would mean scanning every preceding line, so
+instead it seeds from a 1,000-line window above the viewport. That is wrong only
+if a block comment opened more than 1,000 lines earlier and is still open — and
+it keeps the work per frame bounded rather than proportional to file size.
+Languages with no multi-line constructs (JSON, YAML, shell) skip the machinery
+entirely.
 
 ### Measured results
 
@@ -98,9 +192,14 @@ optimization, and it isn't done here.
 
 ```
 index.html            markup and toolbar
-css/styles.css        macOS-flavored theming, light + dark
+manifest.webmanifest  PWA metadata, so the app can be installed
+sw.js                 service worker: precaches the app for offline use
+tools/build.js        inlines everything into one standalone .html
+tools/make-icons.js   generates the app icons (no image library)
+tests/smoke.mjs       boots both distribution shapes and checks them
+css/styles.css        minimalist theming, light + dark
 js/app.js             virtualized rendering, line index, editing, file I/O
-js/highlighter.js     per-line tokenizer
+js/highlighter.js     language specs and the per-line tokenizer
 js/search-worker.js   off-main-thread search
 ```
 
@@ -114,6 +213,7 @@ js/search-worker.js   off-main-thread search
 | Close find | `Esc` |
 | Indent / outdent selection | `Tab` / `Shift+Tab` |
 | Smart home | `Home` |
+| Next / previous match | `Enter` / `Shift+Enter` |
 | Undo / redo | `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z` |
 
 Undo and redo are the browser's native textarea history: edits go through
