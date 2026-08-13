@@ -142,6 +142,70 @@
     return lo;
   }
 
+  /* ---- Block-state cache ---------------------------------------------
+   * Constructs like block comments and triple-quoted strings mean a line's
+   * colouring depends on the lines before it, which is in tension with only
+   * ever looking at visible lines. The compromise: cache the tokenizer state
+   * at the start of each line over a contiguous range, extend it forward as
+   * the viewport moves, and truncate it at the first edited line.
+   *
+   * blockStates[k] is the state entering line (blockBase + k).
+   */
+  const BLOCK_CATCHUP_MAX = 20000; // forward scan budget before giving up
+  const BLOCK_LOOKBEHIND = 1000;   // context scanned when seeding cold
+  const BLOCK_CACHE_MAX = 200000;  // bound on retained states
+
+  let blockStates = [Highlighter.NORMAL];
+  let blockBase = 0;
+  let blockLang = null;
+
+  function resetBlockCache(at) {
+    blockBase = Math.max(0, at);
+    blockStates = [Highlighter.NORMAL];
+  }
+
+  function extendBlockStates(toIdx, text, starts) {
+    for (let k = blockStates.length; k <= toIdx; k++) {
+      const prev = blockBase + k - 1;
+      const lineText = text.slice(starts[prev], lineEndOffset(prev, text, starts));
+      blockStates.push(Highlighter.nextState(lineText, blockStates[k - 1], blockLang));
+    }
+  }
+
+  function blockStateAt(line, text, starts, lang) {
+    // Languages without multi-line constructs never need any of this.
+    if (!Highlighter.hasSpans(lang)) return Highlighter.NORMAL;
+
+    if (blockLang !== lang) {
+      blockLang = lang;
+      resetBlockCache(0);
+    }
+
+    const idx = line - blockBase;
+    if (idx >= 0 && idx < blockStates.length) return blockStates[idx];
+
+    // A jump far past the cache (or backwards) would cost O(document) to
+    // resolve exactly. Seed from a bounded window above instead: wrong only
+    // if a construct opened more than BLOCK_LOOKBEHIND lines earlier, and
+    // bounded work per frame either way.
+    if (idx < 0 || idx - blockStates.length > BLOCK_CATCHUP_MAX ||
+        blockStates.length > BLOCK_CACHE_MAX) {
+      resetBlockCache(line - BLOCK_LOOKBEHIND);
+    }
+
+    extendBlockStates(line - blockBase, text, starts);
+    return blockStates[line - blockBase];
+  }
+
+  // An edit can only change states from its own line onward.
+  function invalidateBlocksAt(offset) {
+    if (!lineStartsCache) { resetBlockCache(0); return; }
+    const line = lineIndexForOffset(offset, lineStartsCache);
+    if (line < blockBase) { resetBlockCache(0); return; }
+    const keep = line - blockBase + 1;
+    if (keep < blockStates.length) blockStates.length = keep;
+  }
+
   // ---- Rendering (virtualized: cost scales with visible lines only) --
   function scheduleRender() {
     if (rafScheduled) return;
@@ -184,6 +248,13 @@
 
     const matchCount = currentMatches.length / 2;
     let matchCursor = matchCount ? firstMatchEndingAfter(starts[startLine]) : 0;
+
+    // State the first visible line starts in (mid block comment, mid
+    // triple-quoted string, ...). Only the entry state has to be looked up;
+    // the loop below threads it forward across the visible window.
+    let lineState = highlightEnabled
+      ? blockStateAt(startLine, text, starts, lang)
+      : Highlighter.NORMAL;
 
     // Reuse pooled nodes rather than rebuilding the subtree each frame:
     // scrolling then mutates existing nodes instead of churning the GC.
@@ -228,7 +299,9 @@
           while (matchCursor < matchCount && currentMatches[matchCursor * 2 + 1] <= le) matchCursor++;
         }
 
-        renderHighlightedLine(hl, lineText, lang, lineMatches, currentMatchIndex);
+        const scan = Highlighter.scanLine(lineText, lineState, lang);
+        lineState = scan.endState;
+        renderHighlightedLine(hl, lineText, scan.segments, lineMatches, currentMatchIndex);
       }
     }
 
@@ -284,9 +357,7 @@
   }
 
   // Plain lines are the common case and skip span construction entirely.
-  function renderHighlightedLine(el, lineText, lang, matches, currentIdx) {
-    const segments = Highlighter.tokenizeLine(lineText, lang);
-
+  function renderHighlightedLine(el, lineText, segments, matches, currentIdx) {
     if (!matches) {
       if (segments.length === 1 && !segments[0].cls) {
         if (el.childNodes.length === 1 && el.firstChild.nodeType === 3) {
@@ -423,6 +494,7 @@
 
   function onInput() {
     const text = editor.value;
+    const editStart = pendingEdit ? pendingEdit.start : 0;
     if (pendingEdit) {
       const delta = text.length - pendingEdit.oldLen;
       if (!applyIncrementalLineStarts(text, pendingEdit.start, pendingEdit.end, delta)) {
@@ -431,6 +503,7 @@
     } else {
       lineStartsDirty = true;
     }
+    invalidateBlocksAt(editStart);
     pendingEdit = null;
 
     scheduleRender();
@@ -563,6 +636,7 @@
     filename = name;
     if (langState === 'auto') langSelect.value = 'auto';
     lineStartsDirty = true;
+    resetBlockCache(0);
     markDirty(false);
     scheduleRender();
     scheduleWordCount();
@@ -796,6 +870,7 @@
     btn.onclick = () => {
       editor.value = prevText;
       lineStartsDirty = true;
+      resetBlockCache(0);
       markDirty(true);
       scheduleRender(); scheduleWordCount(); scheduleAutosave();
       btn.remove();
@@ -825,6 +900,7 @@
     showUndoReplace(text);
     editor.value = newText;
     lineStartsDirty = true;
+    resetBlockCache(0);
     markDirty(true);
     scheduleRender(); scheduleWordCount(); scheduleAutosave();
     runSearch();
@@ -839,8 +915,20 @@
     else if (e.key === 'Escape' && !searchBar.classList.contains('hidden')) { closeSearch(); }
   });
 
+  function populateLanguageMenu() {
+    const frag = document.createDocumentFragment();
+    for (const { id, name } of Highlighter.languageList()) {
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = name;
+      frag.appendChild(opt);
+    }
+    langSelect.appendChild(frag);
+  }
+
   // ---- Init ------------------------------------------------------
   (function init() {
+    populateLanguageMenu();
     const savedTheme = localStorage.getItem(THEME_KEY);
     if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
 
