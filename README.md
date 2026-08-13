@@ -61,7 +61,9 @@ a GitHub Release. Nothing is uploaded by hand.
 
 ## Features
 
-- Syntax highlighting for JavaScript/TypeScript, Python, and JSON
+- Syntax highlighting for 30 languages, with multi-line comments and strings
+  tracked correctly, plus a generic fallback so unknown file types still read
+  as code
 - Find & replace with regex, case sensitivity, and match stepping, with every
   match highlighted at once
 - Open/save real files (File System Access API, with a download fallback)
@@ -71,6 +73,29 @@ a GitHub Release. Nothing is uploaded by hand.
 - CRLF/LF detection with round-trip-safe saving, switchable from the status bar
 - Draft autosave to `localStorage`
 
+## Languages
+
+C, C#, C++, CSS/SCSS/Less, Dart, Dockerfile, Generic code, Go, HTML, INI/Config,
+JSON, Java, JavaScript/TypeScript, Kotlin, Lua, Makefile, Markdown, PHP, Perl,
+Python, R, Ruby, Rust, SQL, Scala, Shell/Bash, Swift, TOML, XML, YAML.
+
+The mode is picked from the file extension, or from the filename for files that
+don't have one (`Dockerfile`, `Makefile`, `.bashrc`). Anything unrecognized falls
+back to a generic mode that colors the comment, string, keyword, and number
+shapes nearly every language shares, so an unknown file still reads as code. You
+can always override the choice from the toolbar.
+
+Adding a language is data rather than code — a spec in `js/highlighter.js`:
+
+```js
+elixir: {
+  name: 'Elixir',
+  line: ['#'], spans: [['"""', '"""', STR]],
+  strings: [['"', '"'], ["'", "'"]], numbers: true,
+  keywords: `def defmodule do end if else case cond fn when nil true false`,
+},
+```
+
 ## Performance
 
 The design goal was that **rendering cost should not depend on file size**.
@@ -78,8 +103,9 @@ The design goal was that **rendering cost should not depend on file size**.
 **Virtualized rendering.** Only the lines actually on screen get DOM nodes —
 about 50-60 of them, whatever the document size. A 300,000-line file renders the
 same ~50 nodes as a 10-line one, and those nodes are pooled and mutated in place
-rather than rebuilt, so scrolling doesn't churn the GC. Measured: 20 scroll
-frames cost **0.2 ms total**, flat from 5k to 100k lines.
+rather than rebuilt, so scrolling doesn't churn the GC. Measured on a
+100,000-line file: **1.2 ms per rendered frame** for plain text, **2.5 ms** for
+highlighted code — flat with file size, and well inside a 16.7 ms frame budget.
 
 **Incremental line indexing.** Mapping character offsets to line numbers needs an
 index of line-start positions. Rebuilding it costs O(document) — ~51 ms on a
@@ -98,13 +124,33 @@ stall. Searching 2,500 matches in a 10,000-line file stays interactive.
 
 **Virtualized match highlighting.** Every match is highlighted, but only the ones
 intersecting the visible window are ever built. On a 10,000-line file with 5,000
-live matches the DOM holds ~25 highlight nodes rather than 5,000, and scrolling
-stays at 0.2 ms per 20 frames.
+live matches the DOM holds ~27 highlight nodes rather than 5,000, and the render
+frame stays at 1.6 ms.
 
-**Per-line tokenizing.** The highlighter is stateless and tokenizes each line
-independently, so highlighting also scales with visible lines rather than file
-size. The tradeoff is that multi-line block comments and template strings aren't
-tracked across line boundaries.
+**Per-line tokenizing.** Languages are declared as compact specs — comment
+markers, string delimiters, keywords — compiled once into a single alternation
+regex. Each line is tokenized on its own, so highlighting scales with visible
+lines rather than file size.
+
+**Bounded cross-line state.** Block comments and triple-quoted strings break the
+"each line is independent" assumption: whether line 900 is code or comment can
+depend on line 40. The tokenizer threads a small integer state from each line to
+the next, and the editor caches the state entering each line, extending that
+cache forward as you scroll and truncating it at the first edited line. Costs on
+a 100,000-line C file with block comments throughout:
+
+| Action | Per rendered frame |
+|---|---|
+| Sequential scrolling | 3.5 ms |
+| Jump to line 100,000 (cold) | 9.0 ms, once |
+| Sustained scrolling after that jump | 2.9 ms |
+
+Resolving a cold jump exactly would mean scanning every preceding line, so
+instead it seeds from a 1,000-line window above the viewport. That is wrong only
+if a block comment opened more than 1,000 lines earlier and is still open — and
+it keeps the work per frame bounded rather than proportional to file size.
+Languages with no multi-line constructs (JSON, YAML, shell) skip the machinery
+entirely.
 
 ### Measured results
 
@@ -153,7 +199,7 @@ tools/make-icons.js   generates the app icons (no image library)
 tests/smoke.mjs       boots both distribution shapes and checks them
 css/styles.css        minimalist theming, light + dark
 js/app.js             virtualized rendering, line index, editing, file I/O
-js/highlighter.js     per-line tokenizer
+js/highlighter.js     language specs and the per-line tokenizer
 js/search-worker.js   off-main-thread search
 ```
 
