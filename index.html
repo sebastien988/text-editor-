@@ -4,7 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Featherpad — a fast text editor</title>
+<meta name="description" content="A fast, dependency-free text editor that runs in the browser.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>&#9998;</text></svg>">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111112" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
@@ -123,5 +129,15 @@
 
 <script src="js/highlighter.js"></script>
 <script src="js/app.js"></script>
+<script>
+// Offline support for the installed app. Service workers need a secure
+// context, so this is skipped when the page is opened straight from disk —
+// the single-file build is the offline story there.
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* offline mode unavailable */ });
+  });
+}
+</script>
 </body>
 </html>

@@ -1,22 +1,63 @@
 # Featherpad
 
 A fast, dependency-free text editor that runs in the browser. No build step, no
-`node_modules`, no framework — three JS files, one CSS file, one HTML file.
+framework, no runtime dependencies — three JS files, one CSS file, one HTML file.
 
 Minimalist monochrome interface: the chrome recedes to hairlines and ghost
 icon buttons so the text carries all the visual weight. Light and dark themes,
 SF Pro / SF Mono on macOS with fallbacks that look right on Windows and Linux.
 
-## Running it
+## Download
 
-**Windows** — double-click `start.bat`.
-**macOS / Linux** — run `./start.sh`.
+Grab either asset from the [latest release](../../releases/latest). Both run on
+Windows, macOS, and Linux — the editor is a web app, so the only requirement is
+a reasonably current browser.
 
-Both serve the folder on `http://localhost:8080` and open a browser. You can
-also just open `index.html` directly; the only difference is that search runs on
-the main thread instead of in a worker, because `file://` blocks Web Workers.
+**`featherpad.html`** — one file. Download it, double-click it, done. It works
+offline and never touches the network; everything is inlined, including the
+search worker, so search still runs off the main thread.
 
-Nothing is installed, and no file leaves your machine.
+**`featherpad-<version>.zip`** (or `.tar.gz`) — the full app. Unpack it and run
+the launcher for your system:
+
+| OS | Run |
+|---|---|
+| Windows | double-click `start.bat` |
+| macOS / Linux | `./start.sh` |
+
+Both serve the folder on `http://localhost:8080` and open a browser. Serving it
+rather than opening the file directly is what allows the service worker to
+register, which is what makes it installable.
+
+Nothing is installed system-wide, and no file leaves your machine.
+
+## Install it as a desktop app
+
+Open the served app (or the hosted copy, if GitHub Pages is enabled for this
+repo) and use your browser's install control:
+
+- **Chrome / Edge** — the install icon in the address bar, or ⋮ → *Cast, save
+  and share* → *Install page as app*
+- **Safari (macOS 14+)** — *File* → *Add to Dock*
+
+It then runs in its own window with its own icon, launches from the Start menu,
+Dock, or app grid, and keeps working with no network at all — the service
+worker precaches the whole app on first load.
+
+## Building from source
+
+No dependencies are needed to *run* the editor; these are only for building the
+standalone file and running the tests.
+
+```sh
+node tools/build.js      # writes dist/featherpad.html
+node tools/make-icons.js # regenerates the PWA icons from source
+npm install && npm test  # smoke-tests both distribution shapes
+```
+
+Releases are cut by tagging a commit — `git tag v1.0.0 && git push origin
+v1.0.0` — which builds the artifacts, smoke-tests them, and publishes them to
+a GitHub Release. Nothing is uploaded by hand.
 
 ## Features
 
@@ -105,6 +146,11 @@ optimization, and it isn't done here.
 
 ```
 index.html            markup and toolbar
+manifest.webmanifest  PWA metadata, so the app can be installed
+sw.js                 service worker: precaches the app for offline use
+tools/build.js        inlines everything into one standalone .html
+tools/make-icons.js   generates the app icons (no image library)
+tests/smoke.mjs       boots both distribution shapes and checks them
 css/styles.css        minimalist theming, light + dark
 js/app.js             virtualized rendering, line index, editing, file I/O
 js/highlighter.js     per-line tokenizer
