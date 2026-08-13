@@ -26,6 +26,8 @@
   const replaceInput = document.getElementById('replaceInput');
   const searchCase = document.getElementById('searchCase');
   const searchRegex = document.getElementById('searchRegex');
+  const searchCaseBtn = document.getElementById('searchCaseBtn');
+  const searchRegexBtn = document.getElementById('searchRegexBtn');
   const searchPrev = document.getElementById('searchPrev');
   const searchNext = document.getElementById('searchNext');
   const replaceOneBtn = document.getElementById('replaceOne');
@@ -54,12 +56,17 @@
   let documentEol = '\n';
   let langState = 'auto';
   let highlightEnabled = true;
-  let fontSizeIndex = 2; // 13px, matching the macOS system default
-  let lineHeightPx = 19;
+  let fontSizeIndex = 2; // 13px
+  let lineHeightPx = 21;
   let lineStartsCache = null;
   let lineStartsDirty = true;
   let dirty = false;
   let rafScheduled = false;
+  // Declared with the rest of the editor state because render() reads them;
+  // keeping them beside the search code risks a temporal-dead-zone error if
+  // a frame is ever scheduled before that section initializes.
+  let currentMatches = new Int32Array(0);
+  let currentMatchIndex = -1;
   let wordCountTimer = null;
   let autosaveTimer = null;
 
@@ -175,6 +182,9 @@
     const cursorLine = lineIndexForOffset(cursorPos, starts);
     const visibleCount = endLine - startLine + 1;
 
+    const matchCount = currentMatches.length / 2;
+    let matchCursor = matchCount ? firstMatchEndingAfter(starts[startLine]) : 0;
+
     // Reuse pooled nodes rather than rebuilding the subtree each frame:
     // scrolling then mutates existing nodes instead of churning the GC.
     const gutterNodes = ensurePool(gutterSpacer, gutterPool, visibleCount, 'gutter-line');
@@ -196,16 +206,37 @@
       if (highlightEnabled) {
         const hl = hlNodes[n];
         if (hl.style.top !== top) hl.style.top = top;
-        const lineText = text.slice(starts[i], lineEndOffset(i, text, starts));
-        renderHighlightedLine(hl, lineText, lang);
+        const ls = starts[i];
+        const le = lineEndOffset(i, text, starts);
+        const lineText = text.slice(ls, le);
+
+        // Slice out only the matches touching this line, in line-local
+        // coordinates. `matchCursor` walks forward with the visible window,
+        // so the whole frame stays O(visible lines + visible matches).
+        let lineMatches = null;
+        if (matchCount) {
+          let mi = matchCursor;
+          while (mi < matchCount && currentMatches[mi * 2] < le) {
+            const ms = currentMatches[mi * 2], me = currentMatches[mi * 2 + 1];
+            if (me > ls) {
+              (lineMatches || (lineMatches = [])).push(
+                Math.max(ms, ls) - ls, Math.min(me, le) - ls, mi);
+            }
+            mi++;
+          }
+          // Matches ending on this line can't affect later ones.
+          while (matchCursor < matchCount && currentMatches[matchCursor * 2 + 1] <= le) matchCursor++;
+        }
+
+        renderHighlightedLine(hl, lineText, lang, lineMatches, currentMatchIndex);
       }
     }
 
     editor.classList.toggle('highlighting-on', highlightEnabled);
     activeLineEl.style.top = (cursorLine * lineHeightPx) + 'px';
 
-    statLines.textContent = 'Lines: ' + total.toLocaleString();
-    statChars.textContent = 'Chars: ' + text.length.toLocaleString();
+    statLines.textContent = total.toLocaleString() + (total === 1 ? ' line' : ' lines');
+    statChars.textContent = text.length.toLocaleString() + ' chars';
     statCursor.textContent = 'Ln ' + (cursorLine + 1) + ', Col ' + (cursorPos - starts[cursorLine] + 1);
     statMode.textContent = lang;
   }
@@ -227,26 +258,70 @@
     return pool;
   }
 
-  // Plain lines are the common case and skip span construction entirely.
-  function renderHighlightedLine(el, lineText, lang) {
-    const segments = Highlighter.tokenizeLine(lineText, lang);
-    if (segments.length === 1 && !segments[0].cls) {
-      if (el.firstChild && el.childNodes.length === 1 && el.firstChild.nodeType === 3) {
-        if (el.firstChild.data !== lineText) el.firstChild.data = lineText;
-      } else {
-        el.textContent = lineText;
-      }
+  // Index of the first match whose end is past `offset`. Matches are
+  // produced left to right, so both ends and starts are ascending.
+  function firstMatchEndingAfter(offset) {
+    let lo = 0, hi = currentMatches.length / 2;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (currentMatches[mid * 2 + 1] <= offset) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  }
+
+  function appendPiece(el, text, cls, isMatch, isCurrent) {
+    if (!text) return;
+    if (!cls && !isMatch) {
+      el.appendChild(document.createTextNode(text));
       return;
     }
+    const span = document.createElement('span');
+    let className = cls || '';
+    if (isMatch) className += (className ? ' ' : '') + (isCurrent ? 'match match-current' : 'match');
+    span.className = className;
+    span.textContent = text;
+    el.appendChild(span);
+  }
+
+  // Plain lines are the common case and skip span construction entirely.
+  function renderHighlightedLine(el, lineText, lang, matches, currentIdx) {
+    const segments = Highlighter.tokenizeLine(lineText, lang);
+
+    if (!matches) {
+      if (segments.length === 1 && !segments[0].cls) {
+        if (el.childNodes.length === 1 && el.firstChild.nodeType === 3) {
+          if (el.firstChild.data !== lineText) el.firstChild.data = lineText;
+        } else {
+          el.textContent = lineText;
+        }
+        return;
+      }
+      el.textContent = '';
+      for (const seg of segments) appendPiece(el, seg.text, seg.cls, false, false);
+      return;
+    }
+
+    // Token runs and match runs are both sorted, so they merge in one pass;
+    // a token is split wherever a match boundary falls inside it.
     el.textContent = '';
+    const matchTotal = matches.length / 3;
+    let pos = 0, mi = 0;
     for (const seg of segments) {
-      if (seg.cls) {
-        const span = document.createElement('span');
-        span.className = seg.cls;
-        span.textContent = seg.text;
-        el.appendChild(span);
-      } else if (seg.text) {
-        el.appendChild(document.createTextNode(seg.text));
+      const segStart = pos, segEnd = pos + seg.text.length;
+      pos = segEnd;
+      let cur = segStart;
+      while (cur < segEnd) {
+        while (mi < matchTotal && matches[mi * 3 + 1] <= cur) mi++;
+        const ms = mi < matchTotal ? matches[mi * 3] : Infinity;
+        if (ms >= segEnd) {
+          appendPiece(el, lineText.slice(cur, segEnd), seg.cls, false, false);
+          break;
+        }
+        if (ms > cur) appendPiece(el, lineText.slice(cur, ms), seg.cls, false, false);
+        const pieceEnd = Math.min(matches[mi * 3 + 1], segEnd);
+        appendPiece(el, lineText.slice(Math.max(cur, ms), pieceEnd), seg.cls,
+          true, matches[mi * 3 + 2] === currentIdx);
+        cur = pieceEnd;
       }
     }
   }
@@ -280,7 +355,7 @@
           else if (c >= 0xdc00 && c < 0xe000) bytes += 0; // low surrogate counted above
           else bytes += 3;
         }
-        statWords.textContent = 'Words: ' + words.toLocaleString();
+        statWords.textContent = words.toLocaleString() + (words === 1 ? ' word' : ' words');
         statSize.textContent = formatBytes(bytes);
       });
     }, 400);
@@ -418,7 +493,7 @@
   // ---- Font size / theme ------------------------------------------
   function applyFontSize() {
     const fs = FONT_SIZES[fontSizeIndex];
-    lineHeightPx = Math.round(fs * 1.45);
+    lineHeightPx = Math.round(fs * 1.6);
     document.documentElement.style.setProperty('--font-size', fs + 'px');
     document.documentElement.style.setProperty('--line-height-px', lineHeightPx + 'px');
     scheduleRender();
@@ -563,8 +638,6 @@
   }
 
   let requestIdCounter = 0;
-  let currentMatches = new Int32Array(0);
-  let currentMatchIndex = -1;
   let searchDebounce = null;
 
   function runSearchSync(payload) {
@@ -600,6 +673,7 @@
       currentMatches = new Int32Array(0);
       currentMatchIndex = -1;
       updateSearchStatus(false);
+      scheduleRender();
       return;
     }
     const id = ++requestIdCounter;
@@ -619,6 +693,7 @@
     currentMatchIndex = currentMatches.length ? 0 : -1;
     updateSearchStatus(data.truncated);
     if (currentMatchIndex >= 0) selectMatch(currentMatchIndex, true);
+    else scheduleRender();
   }
 
   function updateSearchStatus(truncated) {
@@ -655,7 +730,10 @@
 
   function closeSearch() {
     searchBar.classList.add('hidden');
+    currentMatches = new Int32Array(0);
+    currentMatchIndex = -1;
     editor.focus();
+    scheduleRender();
   }
 
   btnSearch.addEventListener('click', openSearch);
@@ -666,6 +744,22 @@
       clearTimeout(searchDebounce);
       searchDebounce = setTimeout(runSearch, 120);
     });
+  });
+
+  // The case/regex options are capsule toggle buttons driving hidden
+  // checkboxes, which stay the single source of truth for search state.
+  [[searchCaseBtn, searchCase], [searchRegexBtn, searchRegex]].forEach(([btn, box]) => {
+    btn.addEventListener('click', () => {
+      box.checked = !box.checked;
+      btn.setAttribute('aria-pressed', String(box.checked));
+      box.dispatchEvent(new Event('input'));
+    });
+  });
+
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    (e.shiftKey ? searchPrev : searchNext).click();
   });
 
   searchNext.addEventListener('click', () => {
@@ -696,7 +790,7 @@
     if (!btn) {
       btn = document.createElement('button');
       btn.id = 'undoReplace';
-      searchStatus.insertAdjacentElement('afterend', btn);
+      replaceAllBtn.insertAdjacentElement('afterend', btn);
     }
     btn.textContent = 'Undo replace';
     btn.onclick = () => {
