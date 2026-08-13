@@ -1,0 +1,49 @@
+name: Deploy to GitHub Pages
+
+# Publishes a hosted copy so the app can be installed straight from the
+# browser. Requires Pages to be enabled once, with the source set to
+# "GitHub Actions" (Settings → Pages).
+on:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Stage the site
+        run: |
+          node tools/make-icons.js
+          node tools/build.js site
+          mkdir -p site
+          cp -r index.html manifest.webmanifest sw.js css js icons site/
+          # Pages serves from a subpath, so no bare-domain assumptions.
+          touch site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

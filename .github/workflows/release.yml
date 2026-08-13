@@ -1,0 +1,59 @@
+name: Release
+
+# Publishes the downloadable artifacts. Tag a commit to cut a release:
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Regenerate icons
+        run: node tools/make-icons.js
+
+      - name: Build the standalone file
+        run: node tools/build.js dist
+
+      - name: Verify the artifacts boot
+        run: |
+          npm install --no-save playwright@^1.49.0
+          npx playwright install --with-deps chromium
+          node tests/smoke.mjs
+
+      - name: Assemble the portable folder
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          mkdir -p "stage/featherpad-$TAG"
+          cp -r index.html manifest.webmanifest sw.js css js icons start.sh start.bat README.md \
+            "stage/featherpad-$TAG/"
+          cp dist/featherpad.html "stage/featherpad-$TAG/"
+          (cd stage && zip -qr "../featherpad-$TAG.zip" "featherpad-$TAG")
+          (cd stage && tar -czf "../featherpad-$TAG.tar.gz" "featherpad-$TAG")
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" \
+            --title "Featherpad $TAG" \
+            --notes-file .github/release-notes.md \
+            dist/featherpad.html \
+            "featherpad-$TAG.zip" \
+            "featherpad-$TAG.tar.gz"

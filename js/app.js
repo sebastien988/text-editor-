@@ -698,7 +698,13 @@
   let searchWorker = null;
   let searchWorkerOk = false;
   try {
-    searchWorker = new Worker('js/search-worker.js');
+    // The single-file build has no sibling .js to point at, so it inlines the
+    // worker source and we spin it up from a blob instead — which keeps
+    // search off the main thread even in the standalone file.
+    const inlineSrc = window.__FEATHERPAD_WORKER_SRC__;
+    searchWorker = inlineSrc
+      ? new Worker(URL.createObjectURL(new Blob([inlineSrc], { type: 'text/javascript' })))
+      : new Worker('js/search-worker.js');
     searchWorkerOk = true;
     searchWorker.onmessage = (e) => handleSearchResult(e.data);
     searchWorker.onerror = (e) => {
