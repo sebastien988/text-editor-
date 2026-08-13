@@ -28,6 +28,9 @@
   --btn-border: #1c1c1e;
   --btn-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
   --sel: rgba(0, 122, 255, 0.35);
+  --match-bg: rgba(255, 214, 10, 0.28);
+  --match-current-bg: rgba(255, 159, 10, 0.55);
+  --match-current-ring: rgba(255, 190, 60, 0.9);
   --kw: #ff7ab2;
   --str: #ff8170;
   --com: #7f8c98;
@@ -51,6 +54,9 @@
   --btn-border: #c9c9ce;
   --btn-shadow: 0 1px 1px rgba(0, 0, 0, 0.05);
   --sel: rgba(0, 122, 255, 0.25);
+  --match-bg: rgba(255, 214, 10, 0.45);
+  --match-current-bg: rgba(255, 159, 10, 0.75);
+  --match-current-ring: rgba(200, 120, 0, 0.65);
   --kw: #9b2393;
   --str: #c41a16;
   --com: #707f8c;
@@ -288,6 +294,18 @@ input[type="checkbox"] {
   background: var(--active-line);
   pointer-events: none;
   z-index: 0;
+}
+
+/* Search matches. Painted on the overlay, so they inherit the token color
+   of whatever they sit on and only exist for lines currently rendered. */
+.match {
+  background: var(--match-bg);
+  border-radius: 2px;
+}
+
+.match-current {
+  background: var(--match-current-bg);
+  box-shadow: 0 0 0 1px var(--match-current-ring);
 }
 
 .tok-kw { color: var(--kw); }
