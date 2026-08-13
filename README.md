@@ -1,0 +1,122 @@
+# Featherpad
+
+A fast, dependency-free text editor that runs in the browser. No build step, no
+`node_modules`, no framework — three JS files, one CSS file, one HTML file.
+
+Styled after macOS (SF Pro / SF Mono, unified title bar, Xcode-flavored syntax
+colors), with fallbacks that look right on Windows and Linux too.
+
+## Running it
+
+**Windows** — double-click `start.bat`.
+**macOS / Linux** — run `./start.sh`.
+
+Both serve the folder on `http://localhost:8080` and open a browser. You can
+also just open `index.html` directly; the only difference is that search runs on
+the main thread instead of in a worker, because `file://` blocks Web Workers.
+
+Nothing is installed, and no file leaves your machine.
+
+## Features
+
+- Syntax highlighting for JavaScript/TypeScript, Python, and JSON
+- Find & replace with regex, case sensitivity, and match stepping
+- Open/save real files (File System Access API, with a download fallback)
+- Line numbers, active-line highlight, live cursor position and document stats
+- Light/dark themes, adjustable font size
+- Auto-indent-aware Tab/Shift-Tab across a selection, smart Home
+- CRLF/LF detection with round-trip-safe saving, switchable from the status bar
+- Draft autosave to `localStorage`
+
+## Performance
+
+The design goal was that **rendering cost should not depend on file size**.
+
+**Virtualized rendering.** Only the lines actually on screen get DOM nodes —
+about 50-60 of them, whatever the document size. A 300,000-line file renders the
+same ~50 nodes as a 10-line one, and those nodes are pooled and mutated in place
+rather than rebuilt, so scrolling doesn't churn the GC. Measured: 20 scroll
+frames cost **0.2 ms total**, flat from 5k to 100k lines.
+
+**Incremental line indexing.** Mapping character offsets to line numbers needs an
+index of line-start positions. Rebuilding it costs O(document) — ~51 ms on a
+13 MB file, which is far too slow to run on every keystroke. Instead an edit
+rescans only the replaced span and shifts the offsets after it, so typing costs
+O(edit size) rather than O(document).
+
+**Stats off the hot path.** Word count and UTF-8 byte size are both O(document);
+the byte size alone cost ~127 ms per frame when computed with `new Blob([text])`.
+They now run together in a single debounced idle pass, so the numbers settle a
+moment after typing stops instead of taxing every keystroke.
+
+**Search in a Web Worker.** Scanning happens off the main thread and results come
+back as a transferred `Int32Array` of offset pairs — no copy, no main-thread
+stall. Searching 2,500 matches in a 10,000-line file stays interactive.
+
+**Per-line tokenizing.** The highlighter is stateless and tokenizes each line
+independently, so highlighting also scales with visible lines rather than file
+size. The tradeoff is that multi-line block comments and template strings aren't
+tracked across line boundaries.
+
+### Measured results
+
+Typing latency, Chromium, sample JavaScript file:
+
+| Document | Before | After | Bare `<textarea>` floor |
+|---|---|---|---|
+| 5,000 lines | — | 16.7 ms/char | 15.3 ms/char |
+| 10,000 lines | — | 27.2 ms/char | ~28 ms/char |
+| 50,000 lines | — | 151.5 ms/char | 155.5 ms/char |
+| 300,000 lines | 1,430 ms/char | ~1,000 ms/char | ~1,000 ms/char |
+
+The "bare textarea floor" column is an empty page containing nothing but a
+`<textarea>` with the same content and **zero JavaScript attached**. The editor
+now sits on top of that floor at every size, meaning its own overhead has been
+optimized down to roughly nothing — what remains is the browser's native cost.
+
+### The honest limitation
+
+That floor is also the ceiling. A native `<textarea>` gets linearly slower as its
+content grows — about 15 ms/char at 5k lines and 385 ms/char at 100k — because
+the browser lays out the entire control on each edit. No amount of JavaScript
+tuning (or Rust/WebAssembly, which wouldn't touch DOM layout at all) changes
+that; only replacing the textarea does.
+
+So Featherpad is genuinely fast for the files people actually edit — **up to
+~10,000 lines it stays comfortably under 30 ms/char** — and scrolling, search,
+and highlighting stay fast at any size. But typing in a 300,000-line file is
+slow, and that is a property of the architecture, not a bug to be tuned away.
+The bundled sample button loads 10,000 lines because that reflects what the
+editor is actually good at.
+
+Getting past it means what CodeMirror and Monaco do: drop the real textarea,
+keep a tiny hidden one for IME and clipboard, and implement cursor, selection,
+hit-testing, and undo by hand. That's a rewrite of the input layer, not an
+optimization, and it isn't done here.
+
+## Layout
+
+```
+index.html            markup and toolbar
+css/styles.css        macOS-flavored theming, light + dark
+js/app.js             virtualized rendering, line index, editing, file I/O
+js/highlighter.js     per-line tokenizer
+js/search-worker.js   off-main-thread search
+```
+
+## Keyboard shortcuts
+
+| Action | Shortcut |
+|---|---|
+| Open | `Ctrl/Cmd+O` |
+| Save | `Ctrl/Cmd+S` |
+| Find | `Ctrl/Cmd+F` |
+| Close find | `Esc` |
+| Indent / outdent selection | `Tab` / `Shift+Tab` |
+| Smart home | `Home` |
+| Undo / redo | `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z` |
+
+Undo and redo are the browser's native textarea history: edits go through
+`insertText` rather than assigning `.value`, which keeps that history intact.
+Replace All is the one exception — it rewrites the whole document, so it offers
+its own "Undo replace" button in the find bar.

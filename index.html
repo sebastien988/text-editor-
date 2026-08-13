@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Featherpad — a fast text editor</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>&#9998;</text></svg>">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div class="app">
+  <header class="toolbar">
+    <div class="traffic-lights" aria-hidden="true">
+      <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+    </div>
+    <div class="toolbar-group">
+      <button id="btnOpen" title="Open file (Ctrl/Cmd+O)">Open</button>
+      <button id="btnSave" title="Save file (Ctrl/Cmd+S)">Save</button>
+      <input id="fileInput" type="file" hidden>
+    </div>
+    <div class="toolbar-sep"></div>
+    <div class="toolbar-group">
+      <select id="langSelect" title="Syntax mode">
+        <option value="auto">Auto</option>
+        <option value="javascript">JavaScript</option>
+        <option value="python">Python</option>
+        <option value="json">JSON</option>
+        <option value="plain">Plain text</option>
+      </select>
+      <label class="toolbar-check"><input type="checkbox" id="highlightToggle" checked> Highlight</label>
+    </div>
+    <div class="toolbar-sep"></div>
+    <div class="toolbar-group">
+      <button id="btnFontDown" title="Decrease font size">A-</button>
+      <button id="btnFontUp" title="Increase font size">A+</button>
+      <button id="btnTheme" title="Toggle theme">Theme</button>
+    </div>
+    <div class="toolbar-group toolbar-group-right">
+      <button id="btnBigFile" title="Generate a 10,000-line sample file to test performance">Load 10k-line sample</button>
+      <button id="btnSearch" title="Find / Replace (Ctrl/Cmd+F)">Find</button>
+    </div>
+  </header>
+
+  <div id="searchBar" class="search-bar hidden">
+    <input id="searchInput" type="text" placeholder="Find" autocomplete="off">
+    <input id="replaceInput" type="text" placeholder="Replace" autocomplete="off">
+    <label class="toolbar-check"><input type="checkbox" id="searchCase"> Aa</label>
+    <label class="toolbar-check"><input type="checkbox" id="searchRegex"> .*</label>
+    <button id="searchPrev" title="Previous match">↑</button>
+    <button id="searchNext" title="Next match">↓</button>
+    <button id="replaceOne">Replace</button>
+    <button id="replaceAll">Replace All</button>
+    <span id="searchStatus" class="search-status"></span>
+    <button id="searchClose" title="Close">✕</button>
+  </div>
+
+  <main class="editor-shell">
+    <div id="gutter" class="gutter" aria-hidden="true">
+      <div id="gutterSpacer" class="spacer"></div>
+    </div>
+    <div id="codeArea" class="code-area">
+      <div id="highlightLayer" class="highlight-layer">
+        <div id="hlSpacer" class="spacer"></div>
+      </div>
+      <div id="activeLine" class="active-line"></div>
+      <textarea id="editor" spellcheck="false" wrap="off" autocapitalize="off" autocomplete="off"
+        placeholder="Start typing, or open a file..."></textarea>
+    </div>
+  </main>
+
+  <footer class="statusbar">
+    <span id="statLines">Lines: 0</span>
+    <span id="statWords">Words: 0</span>
+    <span id="statChars">Chars: 0</span>
+    <span id="statCursor">Ln 1, Col 1</span>
+    <span id="statSize">0 B</span>
+    <span id="statSaved" class="saved-indicator">Saved</span>
+    <span class="spacer-flex"></span>
+    <button id="statEol" class="status-btn" title="Line endings — click to switch">LF</button>
+    <span id="statMode">plain</span>
+  </footer>
+</div>
+
+<script src="js/highlighter.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
