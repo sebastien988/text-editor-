@@ -26,6 +26,8 @@
   const replaceInput = document.getElementById('replaceInput');
   const searchCase = document.getElementById('searchCase');
   const searchRegex = document.getElementById('searchRegex');
+  const searchCaseBtn = document.getElementById('searchCaseBtn');
+  const searchRegexBtn = document.getElementById('searchRegexBtn');
   const searchPrev = document.getElementById('searchPrev');
   const searchNext = document.getElementById('searchNext');
   const replaceOneBtn = document.getElementById('replaceOne');
@@ -54,12 +56,17 @@
   let documentEol = '\n';
   let langState = 'auto';
   let highlightEnabled = true;
-  let fontSizeIndex = 2; // 13px, matching the macOS system default
-  let lineHeightPx = 19;
+  let fontSizeIndex = 2; // 13px
+  let lineHeightPx = 21;
   let lineStartsCache = null;
   let lineStartsDirty = true;
   let dirty = false;
   let rafScheduled = false;
+  // Declared with the rest of the editor state because render() reads them;
+  // keeping them beside the search code risks a temporal-dead-zone error if
+  // a frame is ever scheduled before that section initializes.
+  let currentMatches = new Int32Array(0);
+  let currentMatchIndex = -1;
   let wordCountTimer = null;
   let autosaveTimer = null;
 
@@ -228,8 +235,8 @@
     editor.classList.toggle('highlighting-on', highlightEnabled);
     activeLineEl.style.top = (cursorLine * lineHeightPx) + 'px';
 
-    statLines.textContent = 'Lines: ' + total.toLocaleString();
-    statChars.textContent = 'Chars: ' + text.length.toLocaleString();
+    statLines.textContent = total.toLocaleString() + (total === 1 ? ' line' : ' lines');
+    statChars.textContent = text.length.toLocaleString() + ' chars';
     statCursor.textContent = 'Ln ' + (cursorLine + 1) + ', Col ' + (cursorPos - starts[cursorLine] + 1);
     statMode.textContent = lang;
   }
@@ -348,7 +355,7 @@
           else if (c >= 0xdc00 && c < 0xe000) bytes += 0; // low surrogate counted above
           else bytes += 3;
         }
-        statWords.textContent = 'Words: ' + words.toLocaleString();
+        statWords.textContent = words.toLocaleString() + (words === 1 ? ' word' : ' words');
         statSize.textContent = formatBytes(bytes);
       });
     }, 400);
@@ -486,7 +493,7 @@
   // ---- Font size / theme ------------------------------------------
   function applyFontSize() {
     const fs = FONT_SIZES[fontSizeIndex];
-    lineHeightPx = Math.round(fs * 1.45);
+    lineHeightPx = Math.round(fs * 1.6);
     document.documentElement.style.setProperty('--font-size', fs + 'px');
     document.documentElement.style.setProperty('--line-height-px', lineHeightPx + 'px');
     scheduleRender();
@@ -631,8 +638,6 @@
   }
 
   let requestIdCounter = 0;
-  let currentMatches = new Int32Array(0);
-  let currentMatchIndex = -1;
   let searchDebounce = null;
 
   function runSearchSync(payload) {
@@ -741,6 +746,22 @@
     });
   });
 
+  // The case/regex options are capsule toggle buttons driving hidden
+  // checkboxes, which stay the single source of truth for search state.
+  [[searchCaseBtn, searchCase], [searchRegexBtn, searchRegex]].forEach(([btn, box]) => {
+    btn.addEventListener('click', () => {
+      box.checked = !box.checked;
+      btn.setAttribute('aria-pressed', String(box.checked));
+      box.dispatchEvent(new Event('input'));
+    });
+  });
+
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    (e.shiftKey ? searchPrev : searchNext).click();
+  });
+
   searchNext.addEventListener('click', () => {
     if (!currentMatches.length) return;
     currentMatchIndex = (currentMatchIndex + 1) % (currentMatches.length / 2);
@@ -769,7 +790,7 @@
     if (!btn) {
       btn = document.createElement('button');
       btn.id = 'undoReplace';
-      searchStatus.insertAdjacentElement('afterend', btn);
+      replaceAllBtn.insertAdjacentElement('afterend', btn);
     }
     btn.textContent = 'Undo replace';
     btn.onclick = () => {

@@ -8,50 +8,90 @@
 <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
+<svg class="icon-defs" aria-hidden="true">
+  <defs>
+    <g id="i-open"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h2.6l1.4 2h4A1.5 1.5 0 0 1 13.5 7.5v4A1.5 1.5 0 0 1 12 13H4a1.5 1.5 0 0 1-1.5-1.5z"/></g>
+    <g id="i-save"><path d="M8 2.75v6.75m0 0 2.6-2.6M8 9.5 5.4 6.9"/><path d="M3 10.75v1.5c0 .55.45 1 1 1h8c.55 0 1-.45 1-1v-1.5"/></g>
+    <g id="i-search"><circle cx="7.25" cy="7.25" r="4.25"/><path d="m10.5 10.5 3 3"/></g>
+    <g id="i-sun"><circle cx="8" cy="8" r="2.9"/><path d="M8 1.6v1.3M8 13.1v1.3M14.4 8h-1.3M2.9 8H1.6m10.5-4.5-.92.92M4.42 11.58l-.92.92m9.1 0-.92-.92M4.42 4.42l-.92-.92"/></g>
+    <g id="i-moon"><path d="M13.2 9.6A5.5 5.5 0 0 1 6.4 2.8a5.75 5.75 0 1 0 6.8 6.8"/></g>
+    <g id="i-up"><path d="M8 12.5v-9m0 0L4.5 7M8 3.5 11.5 7"/></g>
+    <g id="i-down"><path d="M8 3.5v9m0 0L11.5 9M8 12.5 4.5 9"/></g>
+    <g id="i-close"><path d="m4.75 4.75 6.5 6.5m0-6.5-6.5 6.5"/></g>
+    <g id="i-doc"><path d="M4 2.75h5L12 5.75v7.5H4z"/><path d="M8.75 2.9v3h3"/></g>
+  </defs>
+</svg>
+
 <div class="app">
   <header class="toolbar">
-    <div class="traffic-lights" aria-hidden="true">
-      <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
-    </div>
-    <div class="toolbar-group">
-      <button id="btnOpen" title="Open file (Ctrl/Cmd+O)">Open</button>
-      <button id="btnSave" title="Save file (Ctrl/Cmd+S)">Save</button>
-      <input id="fileInput" type="file" hidden>
-    </div>
-    <div class="toolbar-sep"></div>
-    <div class="toolbar-group">
-      <select id="langSelect" title="Syntax mode">
-        <option value="auto">Auto</option>
-        <option value="javascript">JavaScript</option>
-        <option value="python">Python</option>
-        <option value="json">JSON</option>
-        <option value="plain">Plain text</option>
-      </select>
-      <label class="toolbar-check"><input type="checkbox" id="highlightToggle" checked> Highlight</label>
-    </div>
-    <div class="toolbar-sep"></div>
-    <div class="toolbar-group">
-      <button id="btnFontDown" title="Decrease font size">A-</button>
-      <button id="btnFontUp" title="Increase font size">A+</button>
-      <button id="btnTheme" title="Toggle theme">Theme</button>
-    </div>
-    <div class="toolbar-group toolbar-group-right">
-      <button id="btnBigFile" title="Generate a 10,000-line sample file to test performance">Load 10k-line sample</button>
-      <button id="btnSearch" title="Find / Replace (Ctrl/Cmd+F)">Find</button>
-    </div>
+    <input id="fileInput" type="file" hidden>
+
+    <button id="btnOpen" title="Open file (Ctrl/Cmd+O)" aria-label="Open file">
+      <svg class="icon" viewBox="0 0 16 16"><use href="#i-open"/></svg>
+    </button>
+    <button id="btnSave" title="Save file (Ctrl/Cmd+S)" aria-label="Save file">
+      <svg class="icon" viewBox="0 0 16 16"><use href="#i-save"/></svg>
+    </button>
+    <button id="btnSearch" title="Find and replace (Ctrl/Cmd+F)" aria-label="Find">
+      <svg class="icon" viewBox="0 0 16 16"><use href="#i-search"/></svg>
+    </button>
+
+    <span class="rule"></span>
+
+    <select id="langSelect" title="Syntax mode">
+      <option value="auto">Auto</option>
+      <option value="javascript">JavaScript</option>
+      <option value="python">Python</option>
+      <option value="json">JSON</option>
+      <option value="plain">Plain text</option>
+    </select>
+
+    <label class="switch" title="Syntax highlighting">
+      <input type="checkbox" id="highlightToggle" checked>
+      <span class="switch-track"><span class="switch-knob"></span></span>
+    </label>
+
+    <span class="spacer-flex"></span>
+
+    <button id="btnBigFile" title="Load a 10,000-line sample file" aria-label="Load sample file">
+      <svg class="icon" viewBox="0 0 16 16"><use href="#i-doc"/></svg>
+    </button>
+    <button id="btnFontDown" title="Decrease font size" aria-label="Decrease font size"><span class="a-small">A</span></button>
+    <button id="btnFontUp" title="Increase font size" aria-label="Increase font size"><span class="a-big">A</span></button>
+    <button id="btnTheme" title="Toggle appearance" aria-label="Toggle appearance">
+      <svg class="icon icon-sun" viewBox="0 0 16 16"><use href="#i-sun"/></svg>
+      <svg class="icon icon-moon" viewBox="0 0 16 16"><use href="#i-moon"/></svg>
+    </button>
   </header>
 
   <div id="searchBar" class="search-bar hidden">
-    <input id="searchInput" type="text" placeholder="Find" autocomplete="off">
-    <input id="replaceInput" type="text" placeholder="Replace" autocomplete="off">
-    <label class="toolbar-check"><input type="checkbox" id="searchCase"> Aa</label>
-    <label class="toolbar-check"><input type="checkbox" id="searchRegex"> .*</label>
-    <button id="searchPrev" title="Previous match">↑</button>
-    <button id="searchNext" title="Next match">↓</button>
-    <button id="replaceOne">Replace</button>
-    <button id="replaceAll">Replace All</button>
-    <span id="searchStatus" class="search-status"></span>
-    <button id="searchClose" title="Close">✕</button>
+    <div class="field">
+      <svg class="icon field-icon" viewBox="0 0 16 16"><use href="#i-search"/></svg>
+      <input id="searchInput" type="text" placeholder="Find" autocomplete="off">
+      <span id="searchStatus" class="search-status"></span>
+    </div>
+    <button id="searchPrev" title="Previous match (Shift+Enter)" aria-label="Previous match">
+      <svg class="icon" viewBox="0 0 16 16"><use href="#i-up"/></svg>
+    </button>
+    <button id="searchNext" title="Next match (Enter)" aria-label="Next match">
+      <svg class="icon" viewBox="0 0 16 16"><use href="#i-down"/></svg>
+    </button>
+    <button id="searchCaseBtn" class="toggle" title="Match case" aria-pressed="false">Aa</button>
+    <button id="searchRegexBtn" class="toggle" title="Regular expression" aria-pressed="false">.*</button>
+
+    <div class="field">
+      <input id="replaceInput" type="text" placeholder="Replace" autocomplete="off">
+    </div>
+    <button id="replaceOne" class="text-btn">Replace</button>
+    <button id="replaceAll" class="text-btn">All</button>
+
+    <span class="spacer-flex"></span>
+    <button id="searchClose" title="Close (Esc)" aria-label="Close find">
+      <svg class="icon" viewBox="0 0 16 16"><use href="#i-close"/></svg>
+    </button>
+
+    <input type="checkbox" id="searchCase" hidden>
+    <input type="checkbox" id="searchRegex" hidden>
   </div>
 
   <main class="editor-shell">
@@ -69,13 +109,13 @@
   </main>
 
   <footer class="statusbar">
-    <span id="statLines">Lines: 0</span>
-    <span id="statWords">Words: 0</span>
-    <span id="statChars">Chars: 0</span>
     <span id="statCursor">Ln 1, Col 1</span>
+    <span id="statLines">0 lines</span>
+    <span id="statWords">0 words</span>
+    <span id="statChars">0 chars</span>
     <span id="statSize">0 B</span>
-    <span id="statSaved" class="saved-indicator">Saved</span>
     <span class="spacer-flex"></span>
+    <span id="statSaved" class="saved-indicator">Saved</span>
     <button id="statEol" class="status-btn" title="Line endings — click to switch">LF</button>
     <span id="statMode">plain</span>
   </footer>
