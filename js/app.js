@@ -50,9 +50,22 @@
   const AUTOSAVE_KEY = 'featherpad:autosave:v1';
   const AUTOSAVE_MAX_CHARS = 2 * 1024 * 1024;
   const THEME_KEY = 'featherpad:theme';
+  const FONT_KEY = 'featherpad:fontSize';
+
+  // Storage can throw rather than just fail (Safari private mode, blocked
+  // site data, some file:// contexts). Every access goes through here so a
+  // missing preference never stops the editor from booting.
+  const store = {
+    get(key) { try { return localStorage.getItem(key); } catch (e) { return null; } },
+    set(key, val) { try { localStorage.setItem(key, val); return true; } catch (e) { return false; } },
+    remove(key) { try { localStorage.removeItem(key); } catch (e) { /* ignore */ } },
+  };
 
   // ---- State -------------------------------------------------------
   let filename = null;
+  // File System Access handle for the open file, when the browser has the
+  // API: lets Save write back in place instead of asking where every time.
+  let fileHandle = null;
   let documentEol = '\n';
   let langState = 'auto';
   let highlightEnabled = true;
@@ -67,8 +80,12 @@
   // a frame is ever scheduled before that section initializes.
   let currentMatches = new Int32Array(0);
   let currentMatchIndex = -1;
+  let requestIdCounter = 0;
+  let searchRequest = null; // options of the newest search in flight
+  let searchDebounce = null;
   let wordCountTimer = null;
   let autosaveTimer = null;
+  let draftKept = true; // whether localStorage holds the current text
 
   // ---- Line index ---------------------------------------------------
   // A full rescan is O(document), which at ~13 MB costs ~50 ms — far too
@@ -434,45 +451,70 @@
 
   // ---- Dirty / autosave ------------------------------------------
   function markDirty(v) {
+    const changed = dirty !== v;
     dirty = v;
     statSaved.textContent = v ? 'Unsaved' : 'Saved';
     statSaved.classList.toggle('dirty', v);
+    // The draft records the flag, so a save has to reach it too — otherwise
+    // the next visit would restore the text still marked "Unsaved".
+    if (changed) scheduleAutosave();
+  }
+
+  function writeDraft() {
+    clearTimeout(autosaveTimer);
+    autosaveTimer = null;
+    const text = editor.value;
+    // Persisting a huge document costs a serialize + copy on every
+    // idle pass and makes the next startup restore it just as slowly,
+    // so past this size the draft is intentionally not kept.
+    if (text.length > AUTOSAVE_MAX_CHARS) {
+      store.remove(AUTOSAVE_KEY);
+      draftKept = false;
+      return;
+    }
+    draftKept = store.set(AUTOSAVE_KEY, JSON.stringify({
+      text, filename, lang: langState, eol: documentEol, dirty, ts: Date.now(),
+    }));
   }
 
   function scheduleAutosave() {
+    draftKept = false;
     clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(() => {
       const ric = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
-      ric(() => {
-        const text = editor.value;
-        // Persisting a huge document costs a serialize + copy on every
-        // idle pass and makes the next startup restore it just as slowly,
-        // so past this size the draft is intentionally not kept.
-        if (text.length > AUTOSAVE_MAX_CHARS) {
-          try { localStorage.removeItem(AUTOSAVE_KEY); } catch (e) { /* ignore */ }
-          return;
-        }
-        try {
-          localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({
-            text, filename, lang: langState, ts: Date.now(),
-          }));
-        } catch (e) { /* quota exceeded — non-fatal */ }
-      });
+      ric(writeDraft);
     }, 800);
   }
 
   function restoreAutosave() {
     try {
-      const raw = localStorage.getItem(AUTOSAVE_KEY);
-      if (!raw) return;
+      const raw = store.get(AUTOSAVE_KEY);
+      if (!raw) return false;
       const data = JSON.parse(raw);
-      if (typeof data.text !== 'string') return;
+      if (typeof data.text !== 'string') return false;
       editor.value = data.text;
       filename = data.filename || null;
       langState = data.lang || 'auto';
       langSelect.value = langState;
-    } catch (e) { /* ignore corrupt autosave */ }
+      if (data.eol === '\r\n' || data.eol === '\r') setEol(data.eol);
+      // Drafts written before the flag existed can't say, so assume the
+      // cautious answer: not on disk.
+      return data.dirty !== false;
+    } catch (e) { return false; /* ignore corrupt autosave */ }
   }
+
+  // Closing the tab inside the autosave debounce would drop the last few
+  // keystrokes, so flush synchronously on the way out. Only a document the
+  // draft can't hold (too big, or storage unavailable) needs the browser's
+  // "leave page?" prompt — anything else comes back on the next visit.
+  addEventListener('pagehide', () => { if (autosaveTimer) writeDraft(); });
+  addEventListener('beforeunload', (e) => {
+    if (autosaveTimer) writeDraft();
+    if (dirty && !draftKept) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
 
   // ---- Input / keyboard ------------------------------------------
   // `beforeinput` is the only place the pre-edit selection is still known,
@@ -504,7 +546,22 @@
       lineStartsDirty = true;
     }
     invalidateBlocksAt(editStart);
+
+    // Match offsets are positions in the old text. Carry the highlights
+    // across the edit right away, then re-search to pick up matches the
+    // edit created or destroyed — without moving the caret the user is
+    // typing with.
+    if (searchIsLive()) {
+      if (pendingEdit) shiftMatches(pendingEdit.start, pendingEdit.end, text.length - pendingEdit.oldLen);
+      else clearMatches();
+      scheduleSearch({ select: false });
+    }
     pendingEdit = null;
+
+    // "Undo replace" restores a snapshot; once the text has moved on from
+    // it, clicking would silently discard everything typed since.
+    const undoBtn = document.getElementById('undoReplace');
+    if (undoBtn) undoBtn.remove();
 
     scheduleRender();
     scheduleAutosave();
@@ -575,17 +632,33 @@
   btnFontUp.addEventListener('click', () => {
     fontSizeIndex = Math.min(FONT_SIZES.length - 1, fontSizeIndex + 1);
     applyFontSize();
+    store.set(FONT_KEY, String(FONT_SIZES[fontSizeIndex]));
   });
   btnFontDown.addEventListener('click', () => {
     fontSizeIndex = Math.max(0, fontSizeIndex - 1);
     applyFontSize();
+    store.set(FONT_KEY, String(FONT_SIZES[fontSizeIndex]));
   });
+
+  // Until the user picks a theme, follow the OS — including when it flips
+  // at sunset. An explicit choice is remembered and wins from then on.
+  const systemDark = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
+
+  function applyTheme() {
+    const saved = store.get(THEME_KEY);
+    const theme = saved === 'dark' || saved === 'light'
+      ? saved
+      : (systemDark && systemDark.matches ? 'dark' : 'light');
+    document.documentElement.setAttribute('data-theme', theme);
+  }
+
+  if (systemDark && systemDark.addEventListener) systemDark.addEventListener('change', applyTheme);
 
   btnTheme.addEventListener('click', () => {
     const cur = document.documentElement.getAttribute('data-theme');
     const next = cur === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
-    localStorage.setItem(THEME_KEY, next);
+    store.set(THEME_KEY, next);
   });
 
   langSelect.addEventListener('change', () => {
@@ -599,15 +672,64 @@
   });
 
   // ---- File open / save ------------------------------------------
-  btnOpen.addEventListener('click', () => fileInput.click());
+  // Opening, dropping, or loading the sample all replace the document
+  // outright — there's no undo past that — so unsaved work is confirmed.
+  function confirmDiscard() {
+    return !dirty || window.confirm('Discard unsaved changes?');
+  }
+
+  async function openFromFile(file, handle) {
+    statSaved.textContent = 'Loading…';
+    const text = await file.text();
+    loadText(text, file.name);
+    fileHandle = handle || null;
+  }
+
+  async function openFile() {
+    if (!confirmDiscard()) return;
+    if (window.showOpenFilePicker) {
+      try {
+        const [handle] = await window.showOpenFilePicker();
+        await openFromFile(await handle.getFile(), handle);
+        return;
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        // Blocked (e.g. a sandboxed frame): fall back to the plain input.
+      }
+    }
+    fileInput.click();
+  }
+
+  btnOpen.addEventListener('click', openFile);
   fileInput.addEventListener('change', async () => {
     const file = fileInput.files[0];
     fileInput.value = '';
     if (!file) return;
-    statSaved.textContent = 'Loading…';
-    const text = await file.text();
-    loadText(text, file.name);
-    statSaved.textContent = 'Saved';
+    await openFromFile(file, null);
+  });
+
+  // Dropping a file anywhere opens it. Without this the browser's default
+  // is to navigate to the file, which throws the editor away.
+  const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  document.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return; // dragged text keeps the textarea's native drop
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('drop', async (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    // The item list is only readable during the event, so ask for the
+    // writable handle before the first await.
+    const item = e.dataTransfer.items && e.dataTransfer.items[0];
+    const handlePromise = item && item.getAsFileSystemHandle
+      ? item.getAsFileSystemHandle().catch(() => null)
+      : Promise.resolve(null);
+    if (!confirmDiscard()) return;
+    const handle = await handlePromise;
+    await openFromFile(file, handle && handle.kind === 'file' ? handle : null);
   });
 
   // Windows files arrive as CRLF. A stray \r would sit at the end of every
@@ -634,27 +756,52 @@
     setEol(eol);
     editor.value = text;
     filename = name;
-    if (langState === 'auto') langSelect.value = 'auto';
+    fileHandle = null;
+    // A hand-picked language belongs to the document it was picked for;
+    // a newly opened file gets detected from its own name.
+    langState = 'auto';
+    langSelect.value = 'auto';
     lineStartsDirty = true;
     resetBlockCache(0);
+    // The old matches index into text that no longer exists.
+    if (searchIsLive()) { clearMatches(); runSearch({ select: false }); }
     markDirty(false);
+    scheduleAutosave();
     scheduleRender();
     scheduleWordCount();
   }
 
-  async function saveFile() {
+  async function writeToHandle(handle, text) {
+    const writable = await handle.createWritable();
+    await writable.write(text);
+    await writable.close();
+  }
+
+  // Save writes back to the file it came from when the browser allows it;
+  // Save As (or Save with no file behind the document) asks where.
+  async function saveFile(saveAs) {
     const text = documentEol === '\n'
       ? editor.value
       : editor.value.split('\n').join(documentEol);
     const name = filename || 'untitled.txt';
+    if (fileHandle && !saveAs) {
+      try {
+        await writeToHandle(fileHandle, text);
+        markDirty(false);
+        return;
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        // Write permission refused, or the file moved: ask where instead.
+      }
+    }
     if (window.showSaveFilePicker) {
       try {
         const handle = await window.showSaveFilePicker({ suggestedName: name });
-        const writable = await handle.createWritable();
-        await writable.write(text);
-        await writable.close();
+        await writeToHandle(handle, text);
+        fileHandle = handle;
         filename = handle.name;
         markDirty(false);
+        scheduleRender(); // a new extension can change the auto language
         return;
       } catch (err) {
         if (err && err.name === 'AbortError') return;
@@ -669,7 +816,7 @@
     URL.revokeObjectURL(url);
     markDirty(false);
   }
-  btnSave.addEventListener('click', saveFile);
+  btnSave.addEventListener('click', (e) => saveFile(e.shiftKey));
 
   // ---- Big sample generator (demonstrates virtualization at scale) --
   function generateBigSample(totalLines) {
@@ -685,11 +832,9 @@
   }
 
   btnBigFile.addEventListener('click', () => {
+    if (!confirmDiscard()) return;
     const text = generateBigSample(10000);
-    loadText(text, 'sample-10k.js');
-    langState = 'javascript';
-    langSelect.value = 'javascript';
-    scheduleRender();
+    loadText(text, 'sample-10k.js'); // .js: auto-detected as JavaScript
   });
 
   // ---- Search / replace (offloaded to a Web Worker) ------------------
@@ -716,9 +861,6 @@
   } catch (e) {
     searchWorkerOk = false;
   }
-
-  let requestIdCounter = 0;
-  let searchDebounce = null;
 
   function runSearchSync(payload) {
     const { text, query, caseSensitive, useRegex } = payload;
@@ -747,16 +889,73 @@
     return { requestId: payload.requestId, pairs: Int32Array.from(pairs), truncated: false };
   }
 
-  function runSearch() {
+  function searchIsLive() {
+    return !searchBar.classList.contains('hidden') && searchInput.value !== '';
+  }
+
+  function clearMatches() {
+    currentMatches = new Int32Array(0);
+    currentMatchIndex = -1;
+  }
+
+  // Keep highlights on their text between an edit and the re-search it
+  // triggers: matches before the edit stay put, matches it touched are
+  // dropped, and matches after it shift by the change in length.
+  function shiftMatches(start, end, delta) {
+    const n = currentMatches.length / 2;
+    if (!n) return;
+    const out = new Int32Array(currentMatches.length);
+    let k = 0, current = -1;
+    for (let i = 0; i < n; i++) {
+      let ms = currentMatches[i * 2], me = currentMatches[i * 2 + 1];
+      if (ms >= end) { ms += delta; me += delta; }
+      else if (me > start) continue;
+      if (i === currentMatchIndex) current = k;
+      out[k * 2] = ms; out[k * 2 + 1] = me;
+      k++;
+    }
+    currentMatches = out.subarray(0, k * 2);
+    currentMatchIndex = current;
+  }
+
+  // First match starting at or after `offset`, wrapping to the top.
+  function matchIndexFrom(offset) {
+    const n = currentMatches.length / 2;
+    let lo = 0, hi = n;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (currentMatches[mid * 2] < offset) lo = mid + 1; else hi = mid;
+    }
+    return lo < n ? lo : 0;
+  }
+
+  function scheduleSearch(opts) {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => runSearch(opts), 120);
+  }
+
+  /*
+   * opts.anchor: the current match becomes the first one at or after this
+   *              offset (default: the caret), like stepping from where you are.
+   * opts.select: move the selection onto that match (default). A refresh
+   *              after typing passes false so the caret isn't yanked away.
+   */
+  function runSearch(opts) {
+    clearTimeout(searchDebounce);
     const query = searchInput.value;
     if (!query) {
-      currentMatches = new Int32Array(0);
-      currentMatchIndex = -1;
+      ++requestIdCounter; // drop any result still in flight
+      clearMatches();
       updateSearchStatus(false);
       scheduleRender();
       return;
     }
     const id = ++requestIdCounter;
+    searchRequest = {
+      id,
+      anchor: opts && opts.anchor != null ? opts.anchor : editor.selectionStart,
+      select: !(opts && opts.select === false),
+    };
     const payload = {
       text: editor.value, query,
       caseSensitive: searchCase.checked, useRegex: searchRegex.checked,
@@ -767,12 +966,12 @@
   }
 
   function handleSearchResult(data) {
-    if (data.requestId !== requestIdCounter) return; // stale response
+    if (!searchRequest || data.requestId !== searchRequest.id) return; // stale response
     if (data.error) { searchStatus.textContent = 'Invalid regex'; return; }
     currentMatches = data.pairs;
-    currentMatchIndex = currentMatches.length ? 0 : -1;
+    currentMatchIndex = currentMatches.length ? matchIndexFrom(searchRequest.anchor) : -1;
     updateSearchStatus(data.truncated);
-    if (currentMatchIndex >= 0) selectMatch(currentMatchIndex, true);
+    if (currentMatchIndex >= 0 && searchRequest.select) selectMatch(currentMatchIndex, true);
     else scheduleRender();
   }
 
@@ -810,8 +1009,9 @@
 
   function closeSearch() {
     searchBar.classList.add('hidden');
-    currentMatches = new Int32Array(0);
-    currentMatchIndex = -1;
+    clearTimeout(searchDebounce);
+    ++requestIdCounter; // a late result must not reselect after closing
+    clearMatches();
     editor.focus();
     scheduleRender();
   }
@@ -820,10 +1020,7 @@
   searchClose.addEventListener('click', closeSearch);
 
   [searchInput, searchCase, searchRegex].forEach((el) => {
-    el.addEventListener('input', () => {
-      clearTimeout(searchDebounce);
-      searchDebounce = setTimeout(runSearch, 120);
-    });
+    el.addEventListener('input', () => scheduleSearch());
   });
 
   // The case/regex options are capsule toggle buttons driving hidden
@@ -856,13 +1053,33 @@
     selectMatch(currentMatchIndex, true);
   });
 
+  // Regex mode expands $1, $&, $<name> the way Replace All does. A sticky
+  // regex pinned at the match start lets String#replace do the expansion
+  // with full context (anchors, lookbehind) while touching only this match.
+  function replacementFor(text, start, end) {
+    const repl = replaceInput.value;
+    if (!searchRegex.checked) return repl;
+    try {
+      const re = new RegExp(searchInput.value, (searchCase.checked ? '' : 'i') + 'y');
+      re.lastIndex = start;
+      const out = text.replace(re, repl);
+      return out.slice(start, out.length - (text.length - end));
+    } catch (e) {
+      return repl;
+    }
+  }
+
   replaceOneBtn.addEventListener('click', () => {
     if (currentMatchIndex < 0) return;
     const start = currentMatches[currentMatchIndex * 2], end = currentMatches[currentMatchIndex * 2 + 1];
+    const replacement = replacementFor(editor.value, start, end);
     editor.focus();
     editor.setSelectionRange(start, end);
-    document.execCommand('insertText', false, replaceInput.value);
-    runSearch();
+    document.execCommand('insertText', false, replacement);
+    // Carry on from just past the new text, so the next Replace hits the
+    // following match rather than jumping back to the top — and a
+    // replacement containing the query isn't matched again.
+    runSearch({ anchor: start + replacement.length });
   });
 
   function showUndoReplace(prevText) {
@@ -895,8 +1112,11 @@
       } else if (searchCase.checked) {
         newText = text.split(query).join(replaceInput.value);
       } else {
+        // Plain mode is literal: a function replacement stops "$&" or "$$"
+        // in the replacement from being expanded as patterns.
         const esc = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        newText = text.replace(new RegExp(esc, 'gi'), replaceInput.value);
+        const repl = replaceInput.value;
+        newText = text.replace(new RegExp(esc, 'gi'), () => repl);
       }
     } catch (e) {
       searchStatus.textContent = 'Invalid regex';
@@ -915,8 +1135,8 @@
   // ---- Global shortcuts ------------------------------------------
   document.addEventListener('keydown', (e) => {
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); }
-    else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); fileInput.click(); }
+    if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(e.shiftKey); }
+    else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openFile(); }
     else if (mod && e.key.toLowerCase() === 'f') { e.preventDefault(); openSearch(); }
     else if (e.key === 'Escape' && !searchBar.classList.contains('hidden')) { closeSearch(); }
   });
@@ -935,12 +1155,14 @@
   // ---- Init ------------------------------------------------------
   (function init() {
     populateLanguageMenu();
-    const savedTheme = localStorage.getItem(THEME_KEY);
-    if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+    applyTheme();
 
-    restoreAutosave();
+    const savedFont = FONT_SIZES.indexOf(Number(store.get(FONT_KEY)));
+    if (savedFont !== -1) fontSizeIndex = savedFont;
+
+    const restoredDirty = restoreAutosave();
     applyFontSize();
-    markDirty(false);
+    markDirty(restoredDirty);
     scheduleRender();
     scheduleWordCount();
   })();

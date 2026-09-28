@@ -7,7 +7,7 @@
  *
  * Bump CACHE when shipping a release so old shells are evicted.
  */
-const CACHE = 'featherpad-v1';
+const CACHE = 'featherpad-v2';
 
 const SHELL = [
   './',
