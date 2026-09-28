@@ -65,13 +65,21 @@ a GitHub Release. Nothing is uploaded by hand.
   tracked correctly, plus a generic fallback so unknown file types still read
   as code
 - Find & replace with regex, case sensitivity, and match stepping, with every
-  match highlighted at once
-- Open/save real files (File System Access API, with a download fallback)
+  match highlighted at once. Highlights follow the text as you edit, Replace
+  steps on to the next match, and regex replacements expand `$1`/`$&`/`$<name>`
+  (plain-text ones are always literal)
+- Open/save real files. Where the browser has the File System Access API,
+  **Save writes back to the file you opened** and Save As picks a new one;
+  elsewhere saving falls back to a download
+- Drag a file onto the window to open it
 - Line numbers, active-line highlight, live cursor position and document stats
-- Light/dark themes, adjustable font size
+- Light/dark themes that follow the system until you pick one; font size is
+  remembered
 - Auto-indent-aware Tab/Shift-Tab across a selection, smart Home
 - CRLF/LF detection with round-trip-safe saving, switchable from the status bar
-- Draft autosave to `localStorage`
+- Draft autosave to `localStorage`, flushed when the tab closes; line endings
+  and the unsaved flag come back with it. Replacing unsaved work (opening a
+  file, dropping one, loading the sample) asks first
 
 ## Languages
 
@@ -196,7 +204,8 @@ manifest.webmanifest  PWA metadata, so the app can be installed
 sw.js                 service worker: precaches the app for offline use
 tools/build.js        inlines everything into one standalone .html
 tools/make-icons.js   generates the app icons (no image library)
-tests/smoke.mjs       boots both distribution shapes and checks them
+tests/smoke.mjs       boots both distribution shapes and exercises editing,
+                      find/replace, files, and drafts in each
 css/styles.css        minimalist theming, light + dark
 js/app.js             virtualized rendering, line index, editing, file I/O
 js/highlighter.js     language specs and the per-line tokenizer
@@ -208,7 +217,8 @@ js/search-worker.js   off-main-thread search
 | Action | Shortcut |
 |---|---|
 | Open | `Ctrl/Cmd+O` |
-| Save | `Ctrl/Cmd+S` |
+| Save (in place, when possible) | `Ctrl/Cmd+S` |
+| Save as | `Ctrl/Cmd+Shift+S`, or Shift-click Save |
 | Find | `Ctrl/Cmd+F` |
 | Close find | `Esc` |
 | Indent / outdent selection | `Tab` / `Shift+Tab` |
@@ -219,4 +229,5 @@ js/search-worker.js   off-main-thread search
 Undo and redo are the browser's native textarea history: edits go through
 `insertText` rather than assigning `.value`, which keeps that history intact.
 Replace All is the one exception — it rewrites the whole document, so it offers
-its own "Undo replace" button in the find bar.
+its own "Undo replace" button in the find bar. The button goes away as soon as
+you edit again, since restoring the snapshot then would discard those edits.
